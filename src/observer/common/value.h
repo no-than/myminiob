@@ -36,6 +36,7 @@ public:
   friend class BooleanType;
   friend class CharType;
   friend class VectorType;
+  friend class DateType;
 
   Value() = default;
 
@@ -92,6 +93,8 @@ public:
   void set_data(const char *data, int length) { this->set_data(const_cast<char *>(data), length); }
   void set_value(const Value &value);
   void set_boolean(bool val);
+  void set_date(int32_t val);             
+  void set_date(const char *s);
 
   string to_string() const;
 
@@ -112,6 +115,7 @@ public:
   string   get_string() const;
   string_t get_string_t() const;
   bool     get_boolean() const;
+  int32_t  get_date() const;
 
 public:
   void set_int(int val);
@@ -129,7 +133,9 @@ private:
     int32_t int_value_;
     float   float_value_;
     bool    bool_value_;
+    int32_t  date_value_;
     char   *pointer_value_;
+
   } value_ = {.int_value_ = 0};
 
   /// 是否申请并占有内存, 目前对于 CHARS 类型 own_data_ 为true, 其余类型 own_data_ 为false

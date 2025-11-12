@@ -19,6 +19,90 @@ See the Mulan PSL v2 for more details. */
 #include "common/lang/sstream.h"
 #include "common/lang/string.h"
 #include "common/log/log.h"
+#include "common/type/date_type.h"
+
+// 判断是否是闰年
+static bool is_leap_year(int year)
+{
+  return (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+}
+
+// 获取某年某月的天数
+static int get_days_in_month(int year, int month)
+{
+  static const int days_per_month[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+  
+  if (month < 1 || month > 12) {
+    return -1;
+  }
+  
+  if (month == 2 && is_leap_year(year)) {
+    return 29;
+  }
+  
+  return days_per_month[month - 1];
+}
+
+// 验证日期是否合法
+bool is_valid_date(int year, int month, int day)
+{
+  if (year < 1 || year > 9999) return false;
+  if (month < 1 || month > 12) return false;
+  
+  int max_day = get_days_in_month(year, month);
+  if (day < 1 || day > max_day) return false;
+  
+  return true;
+}
+
+// 将日期转换为天数（相对于公元1年1月1日）
+int32_t date_to_days(int year, int month, int day)
+{
+  // 计算从公元1年1月1日到指定日期的天数
+  int32_t days = 0;
+  
+  // 计算完整年份的天数
+  for (int y = 1; y < year; y++) {
+    days += is_leap_year(y) ? 366 : 365;
+  }
+  
+  // 计算当年月份的天数
+  for (int m = 1; m < month; m++) {
+    days += get_days_in_month(year, m);
+  }
+  
+  // 加上天数
+  days += day;
+  
+  return days;
+}
+
+// 将天数转换回日期
+void days_to_date(int32_t days, int &year, int &month, int &day)
+{
+  year = 1;
+  
+  // 先找到年份
+  while (true) {
+    int year_days = is_leap_year(year) ? 366 : 365;
+    if (days <= year_days) break;
+    days -= year_days;
+    year++;
+  }
+  
+  // 再找到月份
+  month = 1;
+  while (month <= 12) {
+    int month_days = get_days_in_month(year, month);
+    if (days <= month_days) break;
+    days -= month_days;
+    month++;
+  }
+  
+  // 剩下的就是日
+  day = days;
+}
+
 
 Value::Value(int val) { set_int(val); }
 
@@ -128,6 +212,10 @@ void Value::set_data(char *data, int length)
       value_.bool_value_ = *(int *)data != 0;
       length_            = length;
     } break;
+    case AttrType::DATES: {                    // 🆕 新增这个分支
+      value_.date_value_ = *(int32_t *)data;
+      length_            = length;
+    } break;
     default: {
       LOG_WARN("unknown data type: %d", attr_type_);
     } break;
@@ -205,6 +293,9 @@ void Value::set_value(const Value &value)
     } break;
     case AttrType::BOOLEANS: {
       set_boolean(value.get_boolean());
+    } break;
+    case AttrType::DATES: {                    // 🆕 新增这个分支
+      set_date(value.get_date());
     } break;
     default: {
       ASSERT(false, "got an invalid value type");
@@ -348,4 +439,37 @@ bool Value::get_boolean() const
     }
   }
   return false;
+}
+
+// 从整数设置日期
+void Value::set_date(int32_t val)
+{
+  attr_type_ = AttrType::DATES;
+  value_.date_value_ = val;
+  length_ = sizeof(val);
+}
+
+void Value::set_date(const char *s)
+{
+  int32_t date_val;
+  RC rc = DateType::instance()->str_to_date(s, date_val);
+  if (rc == RC::SUCCESS) {
+    set_date(date_val);
+  } else {
+    attr_type_ = AttrType::UNDEFINED;
+    value_.date_value_ = 0;
+    length_ = 0;
+  }
+}
+
+// 获取日期天数
+int32_t Value::get_date() const
+{
+  switch (attr_type_) {
+    case AttrType::DATES: 
+      return value_.date_value_;
+    default: 
+      LOG_WARN("unsupported get date from type: %s", attr_type_to_string(attr_type_));
+      return 0;
+  }
 }
