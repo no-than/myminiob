@@ -12,7 +12,7 @@ See the Mulan PSL v2 for more details. */
 #include "common/lang/string.h"
 #include "common/type/attr_type.h"
 
-const char *ATTR_TYPE_NAME[] = {"undefined", "chars", "ints", "floats", "vectors", "booleans","dates" };
+const char *ATTR_TYPE_NAME[] = {"undefined", "chars", "ints", "floats", "vectors", "booleans", "dates" };
 
 const char *attr_type_to_string(AttrType type)
 {
@@ -40,4 +40,10 @@ bool is_numerical_type(AttrType type)
 bool is_string_type(AttrType type)
 {
   return (type == AttrType::CHARS);
+}
+
+bool is_comparable_type(AttrType type)
+{
+  return (type == AttrType::INTS || type == AttrType::FLOATS || 
+          type == AttrType::CHARS || type == AttrType::DATES);
 }
