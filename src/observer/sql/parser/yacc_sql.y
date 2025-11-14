@@ -89,6 +89,7 @@ UnboundAggregateExpr *create_aggregate_expression(const char *aggregate_name,
         STRING_T
         FLOAT_T
         DATE_T
+        NULL_T
         VECTOR_T
         HELP
         EXIT
@@ -449,6 +450,17 @@ value:
       char *tmp = common::substr($1,1,strlen($1)-2);
       $$ = new Value(tmp);
       free(tmp);
+    }
+    |DATE_T {  // 添加这个新规则处理日期字符串
+      char *tmp = common::substr($1,1,strlen($1)-2);
+      $$ = new Value();
+      $$->set_date(tmp);  // 使用你在Value类中定义的set_date方法
+      free(tmp);
+      @$ = @1;
+    }
+    |NULL_T {  // 添加NULL处理
+      $$ = new Value();
+      @$ = @1;
     }
     ;
 storage_format:

@@ -1,105 +1,281 @@
-#include "common/type/date_type.h" 
-#include "common/value.h"
-#include "common/lang/comparator.h"
-#include "common/log/log.h"
-#include "common/lang/string.h"
+/* Copyright (c) 2021 OceanBase and/or its affiliates. All rights reserved.
+miniob is licensed under Mulan PSL v2.
+You can use this software according to the terms and conditions of the Mulan PSL v2.
+You may obtain a copy of Mulan PSL v2 at:
+         http://license.coscl.org.cn/MulanPSL2
+THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+See the Mulan PSL v2 for more details. */
 
-DateType *DateType::instance()
+#include "common/type/date_type.h"
+#include "common/lang/comparator.h"
+#include "common/lang/sstream.h"
+#include "common/log/log.h"
+#include "common/value.h"
+#include "common/lang/limits.h"
+#include "storage/common/column.h"
+#include <iomanip>
+#include <sstream>
+#include <algorithm>
+#include <cctype>
+#include <string>
+
+const DateType DateType::instance_;
+
+const DateType *DateType::instance()
 {
-  static DateType instance;
-  return &instance;
+  return &instance_;
 }
 
-DateType::DateType() : DataType(AttrType::DATES) {}
+RC DateType::str_to_date(const string &str, int &date_val) const
+{
+  // 去除首尾空格
+  string trimmed_data = str;
+  trimmed_data.erase(trimmed_data.begin(), std::find_if(trimmed_data.begin(), trimmed_data.end(), [](unsigned char ch) {
+    return !std::isspace(ch);
+  }));
+  trimmed_data.erase(std::find_if(trimmed_data.rbegin(), trimmed_data.rend(), [](unsigned char ch) {
+    return !std::isspace(ch);
+  }).base(), trimmed_data.end());
+  
+  // 处理带时间的日期格式 YYYY-MM-DD HH:MM:SS
+  if (trimmed_data.length() == 19 && trimmed_data[10] == ' ') {
+    trimmed_data = trimmed_data.substr(0, 10); // 只取日期部分
+  }
+  
+  // 验证日期格式 YYYY-MM-DD
+  if (trimmed_data.length() != 10) {
+    LOG_WARN("Invalid date format length: %s", trimmed_data.c_str());
+    return RC::INVALID_ARGUMENT;
+  }
+  
+  if (trimmed_data[4] != '-' || trimmed_data[7] != '-') {
+    LOG_WARN("Invalid date format separators: %s", trimmed_data.c_str());
+    return RC::INVALID_ARGUMENT;
+  }
+  
+  // 验证每个字符是否为数字
+  for (size_t i = 0; i < trimmed_data.length(); ++i) {
+    if (i == 4 || i == 7) continue;  // 跳过分隔符
+    if (!std::isdigit(trimmed_data[i])) {
+      LOG_WARN("Invalid date format, non-digit character: %s", trimmed_data.c_str());
+      return RC::INVALID_ARGUMENT;
+    }
+  }
+  
+  // 解析年月日
+  int year, month, day;
+  try {
+    string year_str = trimmed_data.substr(0, 4);
+    string month_str = trimmed_data.substr(5, 2);
+    string day_str = trimmed_data.substr(8, 2);
+    
+    year = std::stoi(year_str);
+    month = std::stoi(month_str);
+    day = std::stoi(day_str);
+  } catch (const std::exception &e) {
+    LOG_WARN("Failed to parse date components: %s", trimmed_data.c_str());
+    return RC::INVALID_ARGUMENT;
+  }
+  
+  // 验证日期有效性
+  if (!is_valid_date(year, month, day)) {
+    LOG_WARN("Invalid date: %04d-%02d-%02d", year, month, day);
+    return RC::INVALID_ARGUMENT;
+  }
+  
+  // 将日期转换为整数存储 (YYYYMMDD 格式)
+  date_val = year * 10000 + month * 100 + day;
+  
+  return RC::SUCCESS;
+}
 
 int DateType::compare(const Value &left, const Value &right) const
 {
-  ASSERT(left.attr_type() == AttrType::DATES && right.attr_type() == AttrType::DATES, 
-         "invalid type");
+  ASSERT(left.attr_type() == AttrType::DATES, "left value should be date");
+  ASSERT(right.attr_type() == AttrType::DATES, "right value should be date");
   
-  int left_date = left.get_date();
-  int right_date = right.get_date();
+  int left_date = left.get_int();  // 使用 get_int() 而不是 get_date()
+  int right_date = right.get_int();
   
   if (left_date < right_date) {
     return -1;
-  } else if (left_date > right_date) {
-    return 1;
-  } else {
-    return 0;
   }
+  if (left_date > right_date) {
+    return 1;
+  }
+  return 0;
+}
+
+RC DateType::add(const Value &left, const Value &right, Value &result) const
+{
+  // 日期 + 整数天数
+  if (left.attr_type() == AttrType::DATES && right.attr_type() == AttrType::INTS) {
+    int date_val = left.get_int();  // 使用 get_int() 而不是 get_date()
+    int days = right.get_int();
+    
+    // 简单实现：直接在 YYYYMMDD 格式上加天数
+    int year = date_val / 10000;
+    int month = (date_val % 10000) / 100;
+    int day = date_val % 100;
+    
+    day += days;
+    
+    // 处理日期溢出（简化版本）
+    while (day > get_days_in_month(year, month)) {
+      day -= get_days_in_month(year, month);
+      month++;
+      if (month > 12) {
+        month = 1;
+        year++;
+      }
+    }
+    
+    while (day <= 0) {
+      month--;
+      if (month <= 0) {
+        month = 12;
+        year--;
+      }
+      day += get_days_in_month(year, month);
+    }
+    
+    int result_date = year * 10000 + month * 100 + day;
+    result.set_int(result_date);  // 使用 set_int() 而不是 set_date()
+    return RC::SUCCESS;
+  }
+  
+  // 整数天数 + 日期
+  if (left.attr_type() == AttrType::INTS && right.attr_type() == AttrType::DATES) {
+    return add(right, left, result);
+  }
+  
+  return RC::UNSUPPORTED;
+}
+
+RC DateType::subtract(const Value &left, const Value &right, Value &result) const
+{
+  // 日期 - 日期，返回天数差
+  if (left.attr_type() == AttrType::DATES && right.attr_type() == AttrType::DATES) {
+    int left_date = left.get_int();   // 使用 get_int() 而不是 get_date()
+    int right_date = right.get_int();
+    
+    // 简化实现：直接计算 YYYYMMDD 格式的差值
+    int diff = left_date - right_date;
+    result.set_int(diff);
+    return RC::SUCCESS;
+  }
+  
+  // 日期 - 整数天数，返回新日期
+  if (left.attr_type() == AttrType::DATES && right.attr_type() == AttrType::INTS) {
+    Value neg_right;
+    neg_right.set_int(-right.get_int());
+    return add(left, neg_right, result);
+  }
+  
+  return RC::UNSUPPORTED;
+}
+
+RC DateType::multiply(const Value &left, const Value &right, Value &result) const
+{
+  return RC::UNSUPPORTED;
+}
+
+RC DateType::divide(const Value &left, const Value &right, Value &result) const
+{
+  return RC::UNSUPPORTED;
+}
+
+RC DateType::cast_to(const Value &val, AttrType type, Value &result) const
+{
+  switch (type) {
+    case AttrType::CHARS: {
+      string str_val;
+      RC rc = to_string(val, str_val);
+      if (rc != RC::SUCCESS) {
+        return rc;
+      }
+      result.set_string(str_val.c_str());
+      break;
+    }
+    case AttrType::DATES: {
+      result = val;
+      break;
+    }
+    default: {
+      return RC::UNSUPPORTED;
+    }
+  }
+  return RC::SUCCESS;
+}
+
+RC DateType::set_value_from_str(Value &val, const string &data) const
+{
+  int date_val;
+  RC rc = str_to_date(data, date_val);
+  if (rc != RC::SUCCESS) {
+    return rc;
+  }
+  
+  val.set_int(date_val);  // 使用 set_int() 而不是 set_date()
+  val.set_type(AttrType::DATES);  // 明确设置类型
+  return RC::SUCCESS;
 }
 
 RC DateType::to_string(const Value &val, string &result) const
 {
-  int32_t date = val.get_date();
-  int year = date / 10000;
-  int month = (date / 100) % 100;
-  int day = date % 100;
+  int date_value = val.get_int();  // 使用 get_int() 而不是 get_date()
   
-  char buf[16];
-  snprintf(buf, sizeof(buf), "%04d-%02d-%02d", year, month, day);
-  result = buf;
+  int year = date_value / 10000;
+  int month = (date_value % 10000) / 100;
+  int day = date_value % 100;
+  
+  std::ostringstream oss;
+  oss << std::setfill('0') << std::setw(4) << year << "-"
+      << std::setw(2) << month << "-"
+      << std::setw(2) << day;
+  
+  result = oss.str();
   return RC::SUCCESS;
 }
 
-RC DateType::set_value_from_str(Value &val, const std::string &data) const
+bool DateType::is_valid_date(int year, int month, int day) const
 {
-  int32_t date_val;
-  RC rc = str_to_date(data.c_str(), date_val);
-  if (rc != RC::SUCCESS) {
-    // 如果日期无效，返回 RC::FAILURE 并记录日志
-    LOG_WARN("Failed to convert string to date: '%s', returning FAILURE.", data.c_str());
-    return RC::FAILURE;  // 返回自定义的 FAILURE 错误码
+  // 验证年份范围
+  if (year < 1000 || year > 9999) {
+    return false;
   }
-  val.set_date(date_val);
-  return RC::SUCCESS;
+  
+  // 验证月份范围
+  if (month < 1 || month > 12) {
+    return false;
+  }
+  
+  // 验证日期范围
+  if (day < 1 || day > get_days_in_month(year, month)) {
+    return false;
+  }
+  
+  return true;
 }
 
-RC DateType::str_to_date(const char* s, int32_t& date) const
+bool DateType::is_leap_year(int year) const
 {
-  if (s == nullptr) {
-    LOG_WARN("Date string is null.");
-    return RC::INVALID_ARGUMENT; // 处理空指针错误
-  }
+  return (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+}
 
-  int year, month, day;
+int DateType::get_days_in_month(int year, int month) const
+{
+  static const int days_in_month[] = {0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
   
-  // 使用 sscanf 解析日期字符串
-  if (sscanf(s, "%4d-%2d-%2d", &year, &month, &day) != 3) {
-    LOG_WARN("Failed to parse date from string: %s", s);
-    return RC::INVALID_ARGUMENT;  // 如果解析失败，返回无效参数错误
+  if (month < 1 || month > 12) {
+    return 0;
   }
-
-  // 检查日期的有效性
-  if (month < 1 || month > 12 || day < 1 || day > 31) {
-    LOG_WARN("Invalid month or day in date string: %s", s);
-    return RC::INVALID_ARGUMENT;  // 无效的月份或日期
+  
+  if (month == 2 && is_leap_year(year)) {
+    return 29;
   }
-
-  // 对于2月，检查闰年和日期有效性
-  if (month == 2) {
-    if ((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)) {
-      // 闰年，2月有29天
-      if (day > 29) {
-        LOG_WARN("Invalid day in February for leap year: %s", s);
-        return RC::INVALID_ARGUMENT;
-      }
-    } else {
-      // 非闰年，2月只有28天
-      if (day > 28) {
-        LOG_WARN("Invalid day in February for non-leap year: %s", s);
-        return RC::INVALID_ARGUMENT;
-      }
-    }
-  }
-
-  // 对于4月、6月、9月、11月，检查日期有效性（最大31天）
-  if ((month == 4 || month == 6 || month == 9 || month == 11) && day > 30) {
-    LOG_WARN("Invalid day in month with 30 days: %s", s);
-    return RC::INVALID_ARGUMENT;
-  }
-
-  // 如果日期有效，则返回成功，并将日期存储为整数格式 (YYYYMMDD)
-  date = year * 10000 + month * 100 + day;
-  return RC::SUCCESS;
+  
+  return days_in_month[month];
 }
